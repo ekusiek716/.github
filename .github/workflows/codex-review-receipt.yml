@@ -228,7 +228,7 @@ jobs:
                   (reaction) =>
                     isCodex(reaction.user?.login) &&
                     reaction.content === "+1" &&
-                    Date.parse(reaction.created_at || "0") >= receiptCutoff,
+                    Date.parse(reaction.created_at || "0") > receiptCutoff,
                 )
                 .sort(
                   (a, b) =>
@@ -257,7 +257,7 @@ jobs:
                 (reaction) =>
                   isCodex(reaction.user?.login) &&
                   reaction.content === "eyes" &&
-                  Date.parse(reaction.created_at || "0") >= receiptCutoff,
+                  Date.parse(reaction.created_at || "0") > receiptCutoff,
               );
               core.info(
                 "No current-head receipt yet. Codex processing signal: " +
