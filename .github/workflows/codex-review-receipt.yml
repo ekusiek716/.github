@@ -4,12 +4,12 @@ on:
   workflow_call:
     inputs:
       timeout_minutes:
-        description: Maximum time to wait for a Codex receipt
+        description: Maximum time to wait for a Codex receipt (1-10)
         required: false
         type: number
         default: 10
       poll_interval_seconds:
-        description: Delay between GitHub receipt checks
+        description: Delay between GitHub receipt checks (10-60)
         required: false
         type: number
         default: 30
@@ -25,7 +25,7 @@ concurrency:
 
 jobs:
   wait-for-review:
-    name: Codex review receipt
+    name: Codex review activity receipt
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
@@ -51,13 +51,19 @@ jobs:
             const receiptCutoff = Number.isFinite(eventUpdatedAt)
               ? eventUpdatedAt
               : Date.now();
-            const timeoutMinutes = Math.max(
-              1,
-              Number(process.env.RECEIPT_TIMEOUT_MINUTES || "10"),
-            );
-            const pollSeconds = Math.max(
+            const timeoutMinutes = Math.min(
               10,
-              Number(process.env.RECEIPT_POLL_INTERVAL_SECONDS || "30"),
+              Math.max(
+                1,
+                Number(process.env.RECEIPT_TIMEOUT_MINUTES || "10"),
+              ),
+            );
+            const pollSeconds = Math.min(
+              60,
+              Math.max(
+                10,
+                Number(process.env.RECEIPT_POLL_INTERVAL_SECONDS || "30"),
+              ),
             );
             const deadline = Date.now() + timeoutMinutes * 60 * 1000;
 
@@ -78,6 +84,25 @@ jobs:
             core.info("Receipt cutoff: " + new Date(receiptCutoff).toISOString());
 
             while (Date.now() <= deadline) {
+              const { data: latestPr } = await github.rest.pulls.get({
+                owner,
+                repo,
+                pull_number: pullNumber,
+              });
+              if (latestPr.head.sha !== expectedHead) {
+                await writeSummary("Pull request HEAD changed", [
+                  "- Repository: `" + owner + "/" + repo + "`",
+                  "- Pull request: [#" + pullNumber + "](" + pr.html_url + ")",
+                  "- HEAD at workflow trigger: `" + expectedHead + "`",
+                  "- Current HEAD: `" + latestPr.head.sha + "`",
+                  "- Result: this run cannot receipt the newer revision",
+                ]);
+                core.setFailed(
+                  "The pull request HEAD changed while waiting for Codex.",
+                );
+                return;
+              }
+
               const reviews = await github.paginate(
                 github.rest.pulls.listReviews,
                 {
@@ -186,15 +211,16 @@ jobs:
                 )[0];
 
               if (approvalReaction) {
-                await writeSummary("Codex review receipt verified", [
+                await writeSummary("Codex PR activity receipt recorded", [
                   "- Repository: `" + owner + "/" + repo + "`",
                   "- Pull request: [#" + pullNumber + "](" + pr.html_url + ")",
-                  "- Reviewed HEAD: `" + expectedHead + "`",
-                  "- Receipt: Codex 👍 reaction",
+                  "- HEAD at workflow trigger: `" + expectedHead + "`",
+                  "- Receipt: fresh Codex 👍 reaction on the pull request",
                   "- Received: " + approvalReaction.created_at,
-                  "- Result: no findings posted",
+                  "- Result: no findings were posted before this receipt",
+                  "- Scope: PR reactions do not identify a commit SHA",
                 ]);
-                core.info("Verified a fresh Codex thumbs-up receipt.");
+                core.info("Recorded a fresh PR-level Codex thumbs-up receipt.");
                 return;
               }
 
@@ -217,10 +243,10 @@ jobs:
             await writeSummary("Codex review receipt missing", [
               "- Repository: `" + owner + "/" + repo + "`",
               "- Pull request: [#" + pullNumber + "](" + pr.html_url + ")",
-              "- Expected HEAD: `" + expectedHead + "`",
+              "- HEAD at workflow trigger: `" + expectedHead + "`",
               "- Waited: " + timeoutMinutes + " minute(s)",
-              "- Result: no current-head Codex review or fresh 👍 was observed",
+              "- Result: no SHA-bound Codex review or fresh PR-level 👍 was observed",
             ]);
             core.setFailed(
-              "Timed out waiting for a Codex receipt for the current PR HEAD.",
+              "Timed out waiting for Codex activity for this PR event.",
             );
