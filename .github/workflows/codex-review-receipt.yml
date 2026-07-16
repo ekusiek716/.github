@@ -72,10 +72,48 @@ jobs:
                 .toLowerCase()
                 .replace(/\[bot\]$/, "") === "chatgpt-codex-connector";
 
+            const escapeHtml = (value) =>
+              String(value ?? "")
+                .replace(/[\r\n]+/g, " ")
+                .replace(
+                  /[&<>"']/g,
+                  (character) =>
+                    ({
+                      "&": "&amp;",
+                      "<": "&lt;",
+                      ">": "&gt;",
+                      '"': "&quot;",
+                      "'": "&#39;",
+                    })[character],
+                );
+
             const writeSummary = async (heading, lines) => {
               core.summary.addHeading(heading, 2);
               core.summary.addRaw(lines.join("\n") + "\n");
               await core.summary.write();
+            };
+
+            const requireExpectedHead = async () => {
+              const { data: latestPr } = await github.rest.pulls.get({
+                owner,
+                repo,
+                pull_number: pullNumber,
+              });
+              if (latestPr.head.sha === expectedHead) {
+                return true;
+              }
+
+              await writeSummary("Pull request HEAD changed", [
+                "- Repository: `" + owner + "/" + repo + "`",
+                "- Pull request: [#" + pullNumber + "](" + pr.html_url + ")",
+                "- HEAD at workflow trigger: `" + expectedHead + "`",
+                "- Current HEAD: `" + latestPr.head.sha + "`",
+                "- Result: this run cannot receipt the newer revision",
+              ]);
+              core.setFailed(
+                "The pull request HEAD changed while waiting for Codex.",
+              );
+              return false;
             };
 
             core.info("Repository: " + owner + "/" + repo);
@@ -84,22 +122,7 @@ jobs:
             core.info("Receipt cutoff: " + new Date(receiptCutoff).toISOString());
 
             while (Date.now() <= deadline) {
-              const { data: latestPr } = await github.rest.pulls.get({
-                owner,
-                repo,
-                pull_number: pullNumber,
-              });
-              if (latestPr.head.sha !== expectedHead) {
-                await writeSummary("Pull request HEAD changed", [
-                  "- Repository: `" + owner + "/" + repo + "`",
-                  "- Pull request: [#" + pullNumber + "](" + pr.html_url + ")",
-                  "- HEAD at workflow trigger: `" + expectedHead + "`",
-                  "- Current HEAD: `" + latestPr.head.sha + "`",
-                  "- Result: this run cannot receipt the newer revision",
-                ]);
-                core.setFailed(
-                  "The pull request HEAD changed while waiting for Codex.",
-                );
+              if (!(await requireExpectedHead())) {
                 return;
               }
 
@@ -158,13 +181,13 @@ jobs:
                     const line =
                       finding.line ?? finding.original_line ?? "unknown";
                     receiptLines.push(
-                      "  - [" +
-                        finding.path +
+                      '  - <a href="' +
+                        escapeHtml(finding.html_url) +
+                        '"><code>' +
+                        escapeHtml(finding.path) +
                         ":" +
-                        line +
-                        "](" +
-                        finding.html_url +
-                        ")",
+                        escapeHtml(line) +
+                        "</code></a>",
                     );
                   }
                   await writeSummary(
@@ -181,6 +204,9 @@ jobs:
 
                 receiptLines.push("- Result: no inline findings");
                 await writeSummary("Codex review receipt verified", receiptLines);
+                if (!(await requireExpectedHead())) {
+                  return;
+                }
                 core.info("Verified Codex review for current HEAD.");
                 return;
               }
@@ -220,6 +246,9 @@ jobs:
                   "- Result: no findings were posted before this receipt",
                   "- Scope: PR reactions do not identify a commit SHA",
                 ]);
+                if (!(await requireExpectedHead())) {
+                  return;
+                }
                 core.info("Recorded a fresh PR-level Codex thumbs-up receipt.");
                 return;
               }
