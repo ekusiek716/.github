@@ -1,0 +1,226 @@
+name: Reusable Codex Review Receipt
+
+on:
+  workflow_call:
+    inputs:
+      timeout_minutes:
+        description: Maximum time to wait for a Codex receipt
+        required: false
+        type: number
+        default: 10
+      poll_interval_seconds:
+        description: Delay between GitHub receipt checks
+        required: false
+        type: number
+        default: 30
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: codex-review-receipt-${{ github.repository }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  wait-for-review:
+    name: Codex review receipt
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Wait for current-head Codex review
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          RECEIPT_TIMEOUT_MINUTES: ${{ inputs.timeout_minutes }}
+          RECEIPT_POLL_INTERVAL_SECONDS: ${{ inputs.poll_interval_seconds }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const pr = context.payload.pull_request;
+            if (!pr) {
+              core.setFailed("This reusable workflow requires a pull_request event.");
+              return;
+            }
+
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const pullNumber = pr.number;
+            const expectedHead = pr.head.sha;
+            const eventUpdatedAt = Date.parse(pr.updated_at);
+            const receiptCutoff = Number.isFinite(eventUpdatedAt)
+              ? eventUpdatedAt
+              : Date.now();
+            const timeoutMinutes = Math.max(
+              1,
+              Number(process.env.RECEIPT_TIMEOUT_MINUTES || "10"),
+            );
+            const pollSeconds = Math.max(
+              10,
+              Number(process.env.RECEIPT_POLL_INTERVAL_SECONDS || "30"),
+            );
+            const deadline = Date.now() + timeoutMinutes * 60 * 1000;
+
+            const isCodex = (login) =>
+              String(login || "")
+                .toLowerCase()
+                .replace(/\[bot\]$/, "") === "chatgpt-codex-connector";
+
+            const writeSummary = async (heading, lines) => {
+              core.summary.addHeading(heading, 2);
+              core.summary.addRaw(lines.join("\n") + "\n");
+              await core.summary.write();
+            };
+
+            core.info("Repository: " + owner + "/" + repo);
+            core.info("Pull request: #" + pullNumber);
+            core.info("Expected HEAD: " + expectedHead);
+            core.info("Receipt cutoff: " + new Date(receiptCutoff).toISOString());
+
+            while (Date.now() <= deadline) {
+              const reviews = await github.paginate(
+                github.rest.pulls.listReviews,
+                {
+                  owner,
+                  repo,
+                  pull_number: pullNumber,
+                  per_page: 100,
+                },
+              );
+              const currentReview = reviews
+                .filter(
+                  (review) =>
+                    isCodex(review.user?.login) &&
+                    review.commit_id === expectedHead,
+                )
+                .sort(
+                  (a, b) =>
+                    Date.parse(b.submitted_at || "0") -
+                    Date.parse(a.submitted_at || "0"),
+                )[0];
+
+              if (currentReview) {
+                const reviewComments = await github.paginate(
+                  github.rest.pulls.listReviewComments,
+                  {
+                    owner,
+                    repo,
+                    pull_number: pullNumber,
+                    per_page: 100,
+                  },
+                );
+                const currentFindings = reviewComments.filter(
+                  (comment) =>
+                    isCodex(comment.user?.login) &&
+                    comment.commit_id === expectedHead,
+                );
+
+                const receiptLines = [
+                  "- Repository: `" + owner + "/" + repo + "`",
+                  "- Pull request: [#" + pullNumber + "](" + pr.html_url + ")",
+                  "- Reviewed HEAD: `" + expectedHead + "`",
+                  "- Receipt: GitHub pull request review",
+                  "- Submitted: " + (currentReview.submitted_at || "unknown"),
+                ];
+
+                if (currentFindings.length > 0) {
+                  receiptLines.push(
+                    "- Result: " +
+                      currentFindings.length +
+                      " Codex inline finding(s)",
+                  );
+                  for (const finding of currentFindings) {
+                    const line =
+                      finding.line ?? finding.original_line ?? "unknown";
+                    receiptLines.push(
+                      "  - [" +
+                        finding.path +
+                        ":" +
+                        line +
+                        "](" +
+                        finding.html_url +
+                        ")",
+                    );
+                  }
+                  await writeSummary(
+                    "Codex review completed with findings",
+                    receiptLines,
+                  );
+                  core.setFailed(
+                    "Codex reviewed the current HEAD and posted " +
+                      currentFindings.length +
+                      " inline finding(s).",
+                  );
+                  return;
+                }
+
+                receiptLines.push("- Result: no inline findings");
+                await writeSummary("Codex review receipt verified", receiptLines);
+                core.info("Verified Codex review for current HEAD.");
+                return;
+              }
+
+              const reactions = await github.paginate(
+                github.rest.reactions.listForIssue,
+                {
+                  owner,
+                  repo,
+                  issue_number: pullNumber,
+                  per_page: 100,
+                  headers: {
+                    accept: "application/vnd.github+json",
+                  },
+                },
+              );
+              const approvalReaction = reactions
+                .filter(
+                  (reaction) =>
+                    isCodex(reaction.user?.login) &&
+                    reaction.content === "+1" &&
+                    Date.parse(reaction.created_at || "0") >= receiptCutoff,
+                )
+                .sort(
+                  (a, b) =>
+                    Date.parse(b.created_at || "0") -
+                    Date.parse(a.created_at || "0"),
+                )[0];
+
+              if (approvalReaction) {
+                await writeSummary("Codex review receipt verified", [
+                  "- Repository: `" + owner + "/" + repo + "`",
+                  "- Pull request: [#" + pullNumber + "](" + pr.html_url + ")",
+                  "- Reviewed HEAD: `" + expectedHead + "`",
+                  "- Receipt: Codex 👍 reaction",
+                  "- Received: " + approvalReaction.created_at,
+                  "- Result: no findings posted",
+                ]);
+                core.info("Verified a fresh Codex thumbs-up receipt.");
+                return;
+              }
+
+              const freshEyes = reactions.some(
+                (reaction) =>
+                  isCodex(reaction.user?.login) &&
+                  reaction.content === "eyes" &&
+                  Date.parse(reaction.created_at || "0") >= receiptCutoff,
+              );
+              core.info(
+                "No current-head receipt yet. Codex processing signal: " +
+                  (freshEyes ? "seen" : "not seen"),
+              );
+
+              await new Promise((resolve) =>
+                setTimeout(resolve, pollSeconds * 1000),
+              );
+            }
+
+            await writeSummary("Codex review receipt missing", [
+              "- Repository: `" + owner + "/" + repo + "`",
+              "- Pull request: [#" + pullNumber + "](" + pr.html_url + ")",
+              "- Expected HEAD: `" + expectedHead + "`",
+              "- Waited: " + timeoutMinutes + " minute(s)",
+              "- Result: no current-head Codex review or fresh 👍 was observed",
+            ]);
+            core.setFailed(
+              "Timed out waiting for a Codex receipt for the current PR HEAD.",
+            );
