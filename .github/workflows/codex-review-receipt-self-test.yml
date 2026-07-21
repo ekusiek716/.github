@@ -1,0 +1,26 @@
+name: Codex Review Receipt Self-Test
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - '.github/workflows/codex-review-receipt.yml'
+      - '.github/workflows/codex-review-receipt-self-test.yml'
+      - 'scripts/test-codex-review-receipt.mjs'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  receipt:
+    if: github.event.pull_request.draft == false
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    # Relative calls exercise the reusable workflow from this PR's own commit.
+    uses: ./.github/workflows/codex-review-receipt.yml
