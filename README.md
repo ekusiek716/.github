@@ -51,3 +51,7 @@ GitHub の pull request reaction 自体には commit SHA がありません。�
 👎 は「修正済み」の自動推測ではなく、人間による明示的な裁定です。同じ文面の指摘でも新しいHEADで再発している可能性があるため、過去HEADとの本文一致だけでは自動解除しません。workflow summaryには全指摘と、`blocking` / `maintainer-disputed` の状態、裁定者を残します。
 
 caller、特に private repository からは、`v1` のような可変tagではなく、レビュー済みworkflowのfull commit SHAへ固定します。更新時は中央workflowのPRをレビュー・マージした後、caller側も別PRで新しいSHAへ更新します。
+
+中央リポジトリの変更PRでは `codex-review-receipt-self-test.yml` が相対参照でPR自身の
+reusable workflowを呼び、実際の `pull_request` payload・`GITHUB_TOKEN`・GitHub APIで
+dogfoodする。このself-testが成功していないworkflow commitをcallerへ展開しない。
