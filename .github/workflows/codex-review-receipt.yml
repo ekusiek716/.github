@@ -72,6 +72,20 @@ jobs:
                 .toLowerCase()
                 .replace(/\[bot\]$/, "") === "chatgpt-codex-connector";
 
+            const reviewedCommitFromCompletion = (comment) => {
+              if (!isCodex(comment.user?.login)) {
+                return null;
+              }
+              const body = String(comment.body || "");
+              if (!/didn't find any major issues/i.test(body)) {
+                return null;
+              }
+              const match = body.match(
+                /\*\*Reviewed commit:\*\*\s*`([0-9a-f]{10,40})`/i,
+              );
+              return match?.[1]?.toLowerCase() ?? null;
+            };
+
             const permissionCache = new Map();
             const canAdjudicate = async (login) => {
               const normalized = String(login || "");
@@ -286,6 +300,50 @@ jobs:
                   return;
                 }
                 core.info("Verified Codex review for current HEAD.");
+                return;
+              }
+
+              const issueComments = await github.paginate(
+                github.rest.issues.listComments,
+                {
+                  owner,
+                  repo,
+                  issue_number: pullNumber,
+                  per_page: 100,
+                },
+              );
+              const completionComment = issueComments
+                .map((comment) => ({
+                  comment,
+                  reviewedCommit: reviewedCommitFromCompletion(comment),
+                }))
+                .filter(
+                  ({ comment, reviewedCommit }) =>
+                    reviewedCommit &&
+                    expectedHead.toLowerCase().startsWith(reviewedCommit) &&
+                    Date.parse(comment.created_at || "0") > receiptCutoff,
+                )
+                .sort(
+                  (a, b) =>
+                    Date.parse(b.comment.created_at || "0") -
+                    Date.parse(a.comment.created_at || "0"),
+                )[0];
+
+              if (completionComment) {
+                await writeSummary("Codex completion comment verified", [
+                  "- Repository: `" + owner + "/" + repo + "`",
+                  "- Pull request: [#" + pullNumber + "](" + pr.html_url + ")",
+                  "- HEAD at workflow trigger: `" + expectedHead + "`",
+                  "- Reviewed commit prefix: `" +
+                    completionComment.reviewedCommit +
+                    "`",
+                  "- Receipt: Codex no-major-issues completion comment",
+                  "- Received: " + completionComment.comment.created_at,
+                ]);
+                if (!(await requireExpectedHead())) {
+                  return;
+                }
+                core.info("Verified SHA-bound Codex completion comment.");
                 return;
               }
 

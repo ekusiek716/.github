@@ -10,6 +10,8 @@
 - caller repository の短期 `GITHUB_TOKEN` だけを使います
 - Codex の review / inline finding は pull request の現在の HEAD SHA と一致するものだけを受理します
 - 指摘なしの `👍` は、PR event の更新時刻より新しく、待機中に HEAD が変わっていない場合だけ activity receipt として記録します
+- Codexがトップレベル完了コメントを返す場合は、`Didn't find any major issues` と
+  `Reviewed commit` の10桁以上のSHA prefixが現在HEADへ一致する場合だけ受理します
 - Codex の inline finding がある場合は check を失敗させます
 - 誤り・陳腐化・相互矛盾を人間が確認した指摘は、そのinline commentへリポジトリの
   `write` / `maintain` / `admin` 権限を持つ非botユーザーが 👎 を付けると

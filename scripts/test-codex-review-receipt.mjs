@@ -20,14 +20,20 @@ const runWorkflow = new Function(
   "process",
   `return (async () => { ${script} })();`,
 );
+const HEAD_SHA = "abcdef0123456789abcdef0123456789abcdef01";
 
-async function scenario({ reactionsByComment = {}, permissions = {} } = {}) {
+async function scenario({
+  reactionsByComment = {},
+  permissions = {},
+  completionComments = [],
+  includeReview = true,
+} = {}) {
   const failed = [];
   const summaries = [];
   const review = {
     id: 10,
     user: { login: "chatgpt-codex-connector[bot]" },
-    commit_id: "head-sha",
+    commit_id: HEAD_SHA,
     submitted_at: "2026-07-22T00:01:00Z",
   };
   const findings = [
@@ -52,8 +58,8 @@ async function scenario({ reactionsByComment = {}, permissions = {} } = {}) {
     paginate: (operation, input) => operation(input),
     rest: {
       pulls: {
-        get: async () => ({ data: { head: { sha: "head-sha" } } }),
-        listReviews: async () => [review],
+        get: async () => ({ data: { head: { sha: HEAD_SHA } } }),
+        listReviews: async () => (includeReview ? [review] : []),
         listReviewComments: async () => findings,
       },
       reactions: {
@@ -65,6 +71,9 @@ async function scenario({ reactionsByComment = {}, permissions = {} } = {}) {
         getCollaboratorPermissionLevel: async ({ username }) => ({
           data: { permission: permissions[username] ?? "read" },
         }),
+      },
+      issues: {
+        listComments: async () => completionComments,
       },
     },
   };
@@ -91,7 +100,7 @@ async function scenario({ reactionsByComment = {}, permissions = {} } = {}) {
     payload: {
       pull_request: {
         number: 1,
-        head: { sha: "head-sha" },
+        head: { sha: HEAD_SHA },
         updated_at: "2026-07-22T00:00:00Z",
         html_url: "https://example.test/pr/1",
       },
@@ -105,6 +114,22 @@ async function scenario({ reactionsByComment = {}, permissions = {} } = {}) {
     },
   });
   return { failed, summary: summaries.join("\n") };
+}
+
+{
+  const result = await scenario({
+    includeReview: false,
+    completionComments: [
+      {
+        user: { login: "chatgpt-codex-connector[bot]" },
+        body: "Codex Review: Didn't find any major issues.\n\n**Reviewed commit:** `abcdef0123`",
+        created_at: "2026-07-22T00:02:00Z",
+      },
+    ],
+  });
+  assert.deepEqual(result.failed, []);
+  assert.match(result.summary, /Codex completion comment verified/);
+  assert.match(result.summary, /Reviewed commit prefix: `abcdef0123`/);
 }
 
 const reaction = (login) => ({
