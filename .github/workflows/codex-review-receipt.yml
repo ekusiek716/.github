@@ -4,10 +4,10 @@ on:
   workflow_call:
     inputs:
       timeout_minutes:
-        description: Maximum time to wait for a Codex receipt (1-10)
+        description: Maximum time to wait for a Codex receipt (1-20)
         required: false
         type: number
-        default: 10
+        default: 15
       poll_interval_seconds:
         description: Delay between GitHub receipt checks (10-60)
         required: false
@@ -27,7 +27,7 @@ jobs:
   wait-for-review:
     name: Codex review activity receipt
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 22
     steps:
       - name: Wait for current-head Codex review
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -52,10 +52,10 @@ jobs:
               ? eventUpdatedAt
               : Date.now();
             const timeoutMinutes = Math.min(
-              10,
+              20,
               Math.max(
                 1,
-                Number(process.env.RECEIPT_TIMEOUT_MINUTES || "10"),
+                Number(process.env.RECEIPT_TIMEOUT_MINUTES || "15"),
               ),
             );
             const pollSeconds = Math.min(
@@ -71,6 +71,55 @@ jobs:
               String(login || "")
                 .toLowerCase()
                 .replace(/\[bot\]$/, "") === "chatgpt-codex-connector";
+
+            const permissionCache = new Map();
+            const canAdjudicate = async (login) => {
+              const normalized = String(login || "");
+              if (!normalized || /\[bot\]$/i.test(normalized) || isCodex(normalized)) {
+                return false;
+              }
+              if (!permissionCache.has(normalized)) {
+                const permission = await github.rest.repos
+                  .getCollaboratorPermissionLevel({
+                    owner,
+                    repo,
+                    username: normalized,
+                  })
+                  .then(({ data }) => data.permission)
+                  .catch(() => "none");
+                permissionCache.set(normalized, permission);
+              }
+              return ["write", "maintain", "admin"].includes(
+                permissionCache.get(normalized),
+              );
+            };
+
+            const findingAdjudication = async (finding) => {
+              const reactions = await github.paginate(
+                github.rest.reactions.listForPullRequestReviewComment,
+                {
+                  owner,
+                  repo,
+                  comment_id: finding.id,
+                  per_page: 100,
+                  headers: {
+                    accept: "application/vnd.github+json",
+                  },
+                },
+              );
+              for (const reaction of reactions
+                .filter((candidate) => candidate.content === "-1")
+                .sort(
+                  (a, b) =>
+                    Date.parse(b.created_at || "0") -
+                    Date.parse(a.created_at || "0"),
+                )) {
+                if (await canAdjudicate(reaction.user?.login)) {
+                  return reaction;
+                }
+              }
+              return null;
+            };
 
             const escapeHtml = (value) =>
               String(value ?? "")
@@ -172,12 +221,23 @@ jobs:
                 ];
 
                 if (currentFindings.length > 0) {
+                  const findings = await Promise.all(
+                    currentFindings.map(async (finding) => ({
+                      finding,
+                      adjudication: await findingAdjudication(finding),
+                    })),
+                  );
+                  const blockingFindings = findings.filter(
+                    ({ adjudication }) => !adjudication,
+                  );
                   receiptLines.push(
                     "- Result: " +
+                      blockingFindings.length +
+                      " blocking / " +
                       currentFindings.length +
-                      " Codex inline finding(s)",
+                      " total Codex inline finding(s)",
                   );
-                  for (const finding of currentFindings) {
+                  for (const { finding, adjudication } of findings) {
                     const line =
                       finding.line ?? finding.original_line ?? "unknown";
                     receiptLines.push(
@@ -187,17 +247,35 @@ jobs:
                         escapeHtml(finding.path) +
                         ":" +
                         escapeHtml(line) +
-                        "</code></a>",
+                        "</code></a>" +
+                        (adjudication
+                          ? " — maintainer-disputed by @" +
+                            escapeHtml(adjudication.user?.login)
+                          : " — blocking"),
                     );
                   }
+                  if (blockingFindings.length > 0) {
+                    await writeSummary(
+                      "Codex review completed with blocking findings",
+                      receiptLines,
+                    );
+                    core.setFailed(
+                      "Codex reviewed the current HEAD and posted " +
+                        blockingFindings.length +
+                        " non-adjudicated inline finding(s).",
+                    );
+                    return;
+                  }
+
                   await writeSummary(
-                    "Codex review completed with findings",
+                    "Codex review findings adjudicated",
                     receiptLines,
                   );
-                  core.setFailed(
-                    "Codex reviewed the current HEAD and posted " +
-                      currentFindings.length +
-                      " inline finding(s).",
+                  if (!(await requireExpectedHead())) {
+                    return;
+                  }
+                  core.info(
+                    "All current-head Codex findings were disputed by a maintainer.",
                   );
                   return;
                 }
