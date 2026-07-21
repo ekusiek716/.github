@@ -81,7 +81,7 @@ jobs:
                 return null;
               }
               const match = body.match(
-                /\*\*Reviewed commit:\*\*\s*`([0-9a-f]{10,40})`/i,
+                /(?:\*\*)?Reviewed commit:(?:\*\*)?\s*`([0-9a-f]{10,40})`/i,
               );
               return match?.[1]?.toLowerCase() ?? null;
             };

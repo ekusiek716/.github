@@ -132,6 +132,22 @@ async function scenario({
   assert.match(result.summary, /Reviewed commit prefix: `abcdef0123`/);
 }
 
+{
+  const result = await scenario({
+    includeReview: false,
+    completionComments: [
+      {
+        user: { login: "chatgpt-codex-connector[bot]" },
+        body: "Codex Review: Didn't find any major issues.\n\nReviewed commit: `abcdef0123`",
+        created_at: "2026-07-22T00:02:00Z",
+      },
+    ],
+  });
+  assert.deepEqual(result.failed, []);
+  assert.match(result.summary, /Codex completion comment verified/);
+  assert.match(result.summary, /Reviewed commit prefix: `abcdef0123`/);
+}
+
 const reaction = (login) => ({
   content: "-1",
   created_at: "2026-07-22T00:02:00Z",
